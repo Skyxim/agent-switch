@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-27
+
+### Fixed
+- **Antigravity (AGY) 配额展示与窗口解析优化**：
+  - 在 API 请求中注入官方标准 `User-Agent`（包含 `aidev_client` 签名），确保 Google 后端全量下发 `Gemini Models` 组；
+  - 彻底移除基于重置时间倒计时的窗口猜测逻辑，基于 `window`、`bucket_id`、`token_type` 与 `display_name` 元数据确定性解析；
+  - 准确识别 `tokenType: "WTUS"` 为周配额，修复周限额在临近重置日前夕被误判为 Daily 的问题；
+  - 完整呈现 Gemini 组的 5 小时限额（`5h`）与周限额（`Weekly`）。
+
 ## [1.0.0] - 2026-10-27
 
 ### Added
