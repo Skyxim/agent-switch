@@ -88,3 +88,81 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+
+      - name: Load Secrets from Proton Pass
+        if: ${{ secrets.PROTON_PASS_PAT != '' }}
+        uses: protonpass/load-secret-action@v1.1.0
+        with:
+          personal-access-token: ${{ secrets.PROTON_PASS_PAT }}
+          export-env: true
+        env:
+          HOMEBREW_TAP_TOKEN: "pass://Env/ci/HOMEBREW_TAP_TOKEN"
+
+      - name: Update Homebrew Tap Formula
+        if: env.HOMEBREW_TAP_TOKEN != '' || secrets.HOMEBREW_TAP_TOKEN != ''
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ env.HOMEBREW_TAP_TOKEN || secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF#refs/tags/v}"
+
+          # Extract SHA256 checksums from built release assets
+          SHA_MAC_ARM=$(awk '{print $1}' release-assets/ags-${VERSION}-aarch64-apple-darwin.tar.gz.sha256)
+          SHA_MAC_INTEL=$(awk '{print $1}' release-assets/ags-${VERSION}-x86_64-apple-darwin.tar.gz.sha256)
+          SHA_LINUX_MUSL_ARM=$(awk '{print $1}' release-assets/ags-${VERSION}-aarch64-unknown-linux-musl.tar.gz.sha256)
+          SHA_LINUX_MUSL_INTEL=$(awk '{print $1}' release-assets/ags-${VERSION}-x86_64-unknown-linux-musl.tar.gz.sha256)
+
+          # Clone Tap repository
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/Skyxim/homebrew-agent-switch.git" /tmp/homebrew-tap
+          cd /tmp/homebrew-tap
+
+          # Render Formula/agent-switch.rb
+          cat <<EOF | sed 's/^[[:space:]]\{10\}//' > Formula/agent-switch.rb
+          class AgentSwitch < Formula
+            desc "Fast, encrypted CLI switcher for AI agent credentials (Codex & Antigravity)"
+            homepage "https://github.com/Skyxim/agent-switch"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/Skyxim/agent-switch/releases/download/v#{version}/ags-#{version}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_MAC_ARM}"
+              end
+              on_intel do
+                url "https://github.com/Skyxim/agent-switch/releases/download/v#{version}/ags-#{version}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_MAC_INTEL}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/Skyxim/agent-switch/releases/download/v#{version}/ags-#{version}-aarch64-unknown-linux-musl.tar.gz"
+                sha256 "${SHA_LINUX_MUSL_ARM}"
+              end
+              on_intel do
+                url "https://github.com/Skyxim/agent-switch/releases/download/v#{version}/ags-#{version}-x86_64-unknown-linux-musl.tar.gz"
+                sha256 "${SHA_LINUX_MUSL_INTEL}"
+              end
+            end
+
+            def install
+              bin.install "ags"
+            end
+
+            test do
+              assert_match "ags", shell_output("#{bin}/ags --help")
+            end
+          end
+          EOF
+
+          # Commit and push changes
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/agent-switch.rb
+          if git diff --staged --quiet; then
+            echo "Formula is already up to date, skipping commit."
+          else
+            git commit -m "chore: bump agent-switch to v${VERSION}"
+            git push origin main
+          fi
