@@ -1102,14 +1102,12 @@ mod tests {
             fn drop(&mut self) {
                 unsafe {
                     std::env::remove_var("AGS_KEY");
-                    std::env::remove_var("AGS_ENCRYPT_KEY");
                 }
             }
         }
         let _guard = EnvGuard;
         unsafe {
             std::env::set_var("AGS_KEY", "new-key-222");
-            std::env::remove_var("AGS_ENCRYPT_KEY");
         }
 
         // 不开启 clean_incompatible 导入必定失败

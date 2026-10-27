@@ -9,7 +9,6 @@ use std::env;
 
 pub const MAGIC_V1: &[u8] = b"AGSV1";
 pub const ENV_VAR_NAME: &str = "AGS_KEY";
-pub const LEGACY_ENV_VAR_NAME: &str = "AGS_ENCRYPT_KEY";
 const SCHEME_KEYRING: u8 = 2;
 
 pub struct EnvCryptoProvider {
@@ -32,9 +31,6 @@ impl EnvCryptoProvider {
             if let Some(key) = Self::parse_key_str(&val) {
                 return Some(key);
             }
-        }
-        if let Ok(val) = env::var(LEGACY_ENV_VAR_NAME) {
-            return Self::parse_key_str(&val);
         }
         None
     }
@@ -215,45 +211,27 @@ mod tests {
     }
 
     #[test]
-    fn test_env_crypto_env_var_priorities() {
+    fn test_env_crypto_env_var() {
         let _guard = ENV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let prev_key = env::var(ENV_VAR_NAME).ok();
-        let prev_legacy = env::var(LEGACY_ENV_VAR_NAME).ok();
 
         // 1. None set -> Plaintext
         env::remove_var(ENV_VAR_NAME);
-        env::remove_var(LEGACY_ENV_VAR_NAME);
         let p_none = EnvCryptoProvider::new();
         assert!(!p_none.has_key());
 
-        // 2. AGS_KEY set
+        // 2. AGS_KEY set -> has key
         env::set_var(ENV_VAR_NAME, "test-key-primary");
-        env::remove_var(LEGACY_ENV_VAR_NAME);
         let p_primary = EnvCryptoProvider::new();
         assert!(p_primary.has_key());
-
-        // 3. Only legacy AGS_ENCRYPT_KEY set -> fallback succeeds
-        env::remove_var(ENV_VAR_NAME);
-        env::set_var(LEGACY_ENV_VAR_NAME, "test-key-legacy");
-        let p_legacy = EnvCryptoProvider::new();
-        assert!(p_legacy.has_key());
-
-        // 4. Both set -> AGS_KEY takes precedence
-        env::set_var(ENV_VAR_NAME, "primary-key");
-        env::set_var(LEGACY_ENV_VAR_NAME, "legacy-key");
-        let p_both = EnvCryptoProvider::new();
-        let expected_key = EnvCryptoProvider::parse_key_str("primary-key");
-        assert_eq!(p_both.key, expected_key);
+        let expected_key = EnvCryptoProvider::parse_key_str("test-key-primary");
+        assert_eq!(p_primary.key, expected_key);
 
         // Restore
         match prev_key {
             Some(v) => env::set_var(ENV_VAR_NAME, v),
             None => env::remove_var(ENV_VAR_NAME),
-        }
-        match prev_legacy {
-            Some(v) => env::set_var(LEGACY_ENV_VAR_NAME, v),
-            None => env::remove_var(LEGACY_ENV_VAR_NAME),
         }
     }
 }

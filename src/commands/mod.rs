@@ -30,39 +30,37 @@ pub fn prompt_password(cli_password: Option<&str>, is_export: bool) -> Result<St
     }
 
     if cfg!(test) || !io::stdin().is_terminal() {
-        bail!(
-            "未提供加密/解密 Key。独立于环境变量，必须通过 `-k <key>` 或 `--key <key>` 参数提供。"
-        );
+        bail!("No encryption/decryption key provided. Pass via -k/--key or enter interactively.");
     }
 
     let stdin = io::stdin();
     if is_export {
-        print!("请输入归档加密 Key: ");
+        print!("Enter archive encryption key: ");
         io::stdout().flush()?;
         let mut pass1 = String::new();
         stdin.read_line(&mut pass1)?;
         let pass1 = pass1.trim_end_matches(&['\r', '\n'][..]).to_string();
         if pass1.is_empty() {
-            bail!("加密 Key 不能为空");
+            bail!("Encryption key cannot be empty");
         }
 
-        print!("请再次输入确认 Key: ");
+        print!("Confirm archive encryption key: ");
         io::stdout().flush()?;
         let mut pass2 = String::new();
         stdin.read_line(&mut pass2)?;
         let pass2 = pass2.trim_end_matches(&['\r', '\n'][..]).to_string();
         if pass1 != pass2 {
-            bail!("两次输入的 Key 不一致");
+            bail!("Keys do not match");
         }
         Ok(pass1)
     } else {
-        print!("请输入归档解密 Key: ");
+        print!("Enter archive decryption key: ");
         io::stdout().flush()?;
         let mut pass = String::new();
         stdin.read_line(&mut pass)?;
         let pass = pass.trim_end_matches(&['\r', '\n'][..]).to_string();
         if pass.is_empty() {
-            bail!("解密 Key 不能为空");
+            bail!("Decryption key cannot be empty");
         }
         Ok(pass)
     }
@@ -109,13 +107,13 @@ pub enum Commands {
     /// Print system status, active store engine, and account summaries
     Info,
 
-    /// 导出完全解耦底层存储的便携加密归档包（必须提供独立 Key/Password）
+    /// Export portable encrypted backup archive (standalone key required)
     Export(ExportArgs),
 
-    /// 从便携加密归档包导入凭据至当前环境（自动处理不兼容旧数据）
+    /// Import credentials from portable encrypted backup archive
     Import(ImportArgs),
 
-    /// 检查并自我更新到 GitHub Releases 最新版本
+    /// Check and self-update to latest release from GitHub Releases
     Update(UpdateArgs),
 }
 
@@ -197,7 +195,7 @@ mod tests {
 
     #[test]
     fn test_prompt_password_missing_in_non_terminal_fails() {
-        // 未提供 CLI 参数时在非 TTY 下必定返回错误
+        // Missing CLI argument in non-TTY environment must return error
         let res = prompt_password(None, false);
         assert!(res.is_err());
     }

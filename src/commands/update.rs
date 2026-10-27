@@ -6,29 +6,29 @@ use std::path::Path;
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct UpdateArgs {
-    /// 仅检查是否有新版本，不执行下载与安装
+    /// Check for available updates without downloading or installing
     #[arg(long)]
     pub check: bool,
 
-    /// 强制更新（即使本地版本与远端一致）
+    /// Force update even if already up to date
     #[arg(short = 'f', long = "force")]
     pub force: bool,
 
-    /// 指定更新到某一特定 Release tag（可选，默认最新版本）
+    /// Target a specific Release tag (optional, defaults to latest)
     #[arg(long)]
     pub tag: Option<String>,
 }
 
-/// 程序安装来源类型
+/// Binary installation source
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallSource {
-    /// 通过 Homebrew 包管理器安装（路径包含 cellar/、homebrew、/opt/homebrew 或指向此类目录的符号链接）
+    /// Installed via Homebrew package manager
     Homebrew,
-    /// 通过 Cargo 安装（路径包含 .cargo/bin）
+    /// Installed via Cargo (cargo install)
     Cargo,
-    /// 本地源码开发构建（路径包含 /target/debug/ 或 /target/release/）
+    /// Local development build (target/debug or target/release)
     DevBuild,
-    /// 独立二进制或通过官方脚本安装在标准路径（如 /usr/local/bin、~/.local/bin、$LOCALAPPDATA/Programs 等）
+    /// Standalone binary or official script install
     Standalone,
 }
 
@@ -44,7 +44,7 @@ impl std::fmt::Display for InstallSource {
 }
 
 fn path_matches_source(s: &str) -> Option<InstallSource> {
-    // 1. 本地开发构建路径特征：/target/debug/ 或 /target/release/
+    // 1. Local dev build path patterns: /target/debug/ or /target/release/
     if s.contains("/target/debug")
         || s.starts_with("target/debug")
         || s.contains("/target/release")
@@ -54,12 +54,12 @@ fn path_matches_source(s: &str) -> Option<InstallSource> {
         return Some(InstallSource::DevBuild);
     }
 
-    // 2. Cargo 默认安装路径特征：.cargo/bin
+    // 2. Cargo default install path pattern: .cargo/bin
     if s.contains(".cargo/bin") {
         return Some(InstallSource::Cargo);
     }
 
-    // 3. Homebrew 路径特征：cellar/、homebrew、/opt/homebrew、linuxbrew
+    // 3. Homebrew path patterns: cellar/, homebrew, /opt/homebrew, linuxbrew
     if s.contains("cellar/")
         || s.contains("homebrew")
         || s.contains("/opt/homebrew")
@@ -71,9 +71,9 @@ fn path_matches_source(s: &str) -> Option<InstallSource> {
     None
 }
 
-/// 检测可执行文件的安装来源
+/// Detect installation source of the executable
 pub fn detect_install_source(exe_path: &Path) -> InstallSource {
-    // 优先尝试解析符号链接（Homebrew 常将 bin/ags 软链接到 Cellar/...）
+    // Prefer resolving symbolic links (Homebrew often symlinks bin/ags to Cellar/...)
     if let Ok(canonical) = std::fs::canonicalize(exe_path) {
         let canon_str = canonical
             .to_string_lossy()
@@ -84,7 +84,7 @@ pub fn detect_install_source(exe_path: &Path) -> InstallSource {
         }
     }
 
-    // 检查原始传入路径
+    // Check original provided path
     let orig_str = exe_path.to_string_lossy().replace('\\', "/").to_lowercase();
     if let Some(src) = path_matches_source(&orig_str) {
         return src;
@@ -109,7 +109,7 @@ pub struct GithubRelease {
     pub assets: Vec<ReleaseAsset>,
 }
 
-/// 简易语义化版本结构，用于版本高低对比
+/// Simple semantic version structure for version comparison
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SimpleVersion {
     pub numbers: Vec<u64>,
@@ -120,10 +120,10 @@ impl SimpleVersion {
     pub fn parse(s: &str) -> Result<Self> {
         let trimmed = s.trim().trim_start_matches(['v', 'V']);
         if trimmed.is_empty() {
-            anyhow::bail!("版本字符串为空");
+            anyhow::bail!("Version string is empty");
         }
 
-        // 去除构建元数据 (+build.123)
+        // Strip build metadata (+build.123)
         let core_and_pre = match trimmed.split_once('+') {
             Some((head, _)) => head,
             None => trimmed,
@@ -138,13 +138,13 @@ impl SimpleVersion {
             .split('.')
             .map(|part| {
                 part.parse::<u64>()
-                    .with_context(|| format!("解析版本号段 '{}' 失败", part))
+                    .with_context(|| format!("Failed to parse version segment '{}'", part))
             })
             .collect();
         let numbers = numbers?;
 
         if numbers.is_empty() {
-            anyhow::bail!("版本核心号段不能为空");
+            anyhow::bail!("Version core numbers cannot be empty");
         }
 
         Ok(Self { numbers, pre })
@@ -168,8 +168,8 @@ impl Ord for SimpleVersion {
             }
         }
 
-        // 数值段完全相等时，比较先行预发标识 (pre-release)
-        // 规则：正式版本（无 pre-release）高于预览版本（有 pre-release）
+        // When numeric parts are identical, compare pre-release identifiers
+        // Rule: Release versions (without pre-release) are greater than pre-release versions
         match (&self.pre, &other.pre) {
             (None, None) => Ordering::Equal,
             (Some(_), None) => Ordering::Less,
@@ -179,15 +179,15 @@ impl Ord for SimpleVersion {
     }
 }
 
-/// 对比两个版本号字符串（支持前导 v/V）
-/// 返回 Ordering：v1.cmp(v2)
+/// Compare two version strings (supports leading v/V)
+/// Returns Ordering: v1.cmp(v2)
 pub fn compare_versions(v1: &str, v2: &str) -> Result<Ordering> {
     let ver1 = SimpleVersion::parse(v1)?;
     let ver2 = SimpleVersion::parse(v2)?;
     Ok(ver1.cmp(&ver2))
 }
 
-/// 根据操作系统与架构获取标准 Target Triple
+/// Get standard Target Triple based on OS and architecture
 pub fn get_target_for(os: &str, arch: &str) -> Result<&'static str> {
     match (os, arch) {
         ("linux", "x86_64") => Ok("x86_64-unknown-linux-musl"),
@@ -195,21 +195,25 @@ pub fn get_target_for(os: &str, arch: &str) -> Result<&'static str> {
         ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
         ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
         ("windows", "x86_64") => Ok("x86_64-pc-windows-msvc"),
-        _ => anyhow::bail!("当前平台暂不支持自动更新: {}/{}", os, arch),
+        _ => anyhow::bail!(
+            "Target platform is not supported for auto-update: {}/{}",
+            os,
+            arch
+        ),
     }
 }
 
-/// 获取当前运行环境的目标平台 Triple
+/// Get current runtime target platform triple
 pub fn current_target() -> Result<&'static str> {
     get_target_for(std::env::consts::OS, std::env::consts::ARCH)
 }
 
-/// 在 Release 资产列表中查找匹配目标平台的构建资产
+/// Find release asset matching target platform from list of release assets
 pub fn find_matching_asset<'a>(
     assets: &'a [ReleaseAsset],
     target: &str,
 ) -> Option<&'a ReleaseAsset> {
-    // 过滤掉校验和及签名等非可执行资产
+    // Filter out checksums, signatures, and non-executable assets
     let candidates: Vec<&ReleaseAsset> = assets
         .iter()
         .filter(|a| {
@@ -223,12 +227,12 @@ pub fn find_matching_asset<'a>(
         })
         .collect();
 
-    // 1. 完全匹配 target 标识
+    // 1. Exact match with target identifier
     if let Some(asset) = candidates.iter().find(|a| a.name.contains(target)) {
         return Some(asset);
     }
 
-    // 2. Linux 平台 musl 与 gnu 互为回退兜底
+    // 2. Linux platform musl and gnu fallback
     if target.contains("unknown-linux-musl") {
         let gnu_target = target.replace("unknown-linux-musl", "unknown-linux-gnu");
         if let Some(asset) = candidates.iter().find(|a| a.name.contains(&gnu_target)) {
@@ -244,16 +248,19 @@ pub fn find_matching_asset<'a>(
     None
 }
 
-/// 从下载的数据中提取可执行二进制内容（支持 .tar.gz、.zip 及原始二进制）
+/// Extract executable binary bytes from downloaded data (supports .tar.gz, .zip, and raw binaries)
 pub fn extract_binary(asset_name: &str, data: &[u8]) -> Result<Vec<u8>> {
     let lower_name = asset_name.to_lowercase();
     if lower_name.ends_with(".tar.gz") || lower_name.ends_with(".tgz") {
         let gz = flate2::read::GzDecoder::new(data);
         let mut archive = tar::Archive::new(gz);
-        for entry_res in archive.entries().context("读取 tar 归档条目失败")? {
-            let mut entry = entry_res.context("读取 tar 条目失败")?;
+        for entry_res in archive
+            .entries()
+            .context("Failed to read tar archive entries")?
+        {
+            let mut entry = entry_res.context("Failed to read tar entry")?;
             let is_file = entry.header().entry_type().is_file();
-            let path = entry.path().context("获取 tar 文件路径失败")?;
+            let path = entry.path().context("Failed to get tar file path")?;
             let is_match = is_file
                 && path
                     .file_name()
@@ -265,19 +272,19 @@ pub fn extract_binary(asset_name: &str, data: &[u8]) -> Result<Vec<u8>> {
                 let mut buf = Vec::new();
                 entry
                     .read_to_end(&mut buf)
-                    .context("读取归档中二进制失败")?;
+                    .context("Failed to read binary in archive")?;
                 return Ok(buf);
             }
         }
         anyhow::bail!(
-            "在归档文件 '{}' 中未找到可执行文件 'ags' 或 'ags.exe'",
+            "Executable 'ags' or 'ags.exe' not found in archive '{}'",
             asset_name
         );
     } else if lower_name.ends_with(".zip") {
         let cursor = std::io::Cursor::new(data);
-        let mut zip = zip::ZipArchive::new(cursor).context("解析 zip 归档失败")?;
+        let mut zip = zip::ZipArchive::new(cursor).context("Failed to parse zip archive")?;
         for i in 0..zip.len() {
-            let mut file = zip.by_index(i).context("读取 zip 条目失败")?;
+            let mut file = zip.by_index(i).context("Failed to read zip entry")?;
             if file.is_file() {
                 let name = file.name();
                 let is_match = Path::new(name)
@@ -289,31 +296,35 @@ pub fn extract_binary(asset_name: &str, data: &[u8]) -> Result<Vec<u8>> {
                 if is_match {
                     let mut buf = Vec::new();
                     file.read_to_end(&mut buf)
-                        .context("读取 zip 中二进制失败")?;
+                        .context("Failed to read binary in zip")?;
                     return Ok(buf);
                 }
             }
         }
         anyhow::bail!(
-            "在 zip 归档 '{}' 中未找到可执行文件 'ags' 或 'ags.exe'",
+            "Executable 'ags' or 'ags.exe' not found in zip archive '{}'",
             asset_name
         );
     } else {
-        // 原始裸二进制
+        // Raw binary
         Ok(data.to_vec())
     }
 }
 
-/// 执行文件替换（在目标文件所在同级目录创建临时文件，赋予权限后原子替换）
+/// Perform executable replacement (creates temporary file in target directory and atomically replaces)
 pub fn replace_executable(target_path: &Path, binary_bytes: &[u8]) -> Result<()> {
     let parent = target_path
         .parent()
-        .ok_or_else(|| anyhow::anyhow!("无法获取可执行文件所在目录"))?;
+        .ok_or_else(|| anyhow::anyhow!("Unable to get executable directory"))?;
 
     let temp_file_path = parent.join(format!(".ags-update-tmp.{}", rand::random::<u32>()));
 
-    std::fs::write(&temp_file_path, binary_bytes)
-        .with_context(|| format!("写入临时更新文件 {} 失败", temp_file_path.display()))?;
+    std::fs::write(&temp_file_path, binary_bytes).with_context(|| {
+        format!(
+            "Failed to write temporary update file {}",
+            temp_file_path.display()
+        )
+    })?;
 
     #[cfg(unix)]
     {
@@ -321,14 +332,14 @@ pub fn replace_executable(target_path: &Path, binary_bytes: &[u8]) -> Result<()>
         let perms = std::fs::Permissions::from_mode(0o755);
         if let Err(e) = std::fs::set_permissions(&temp_file_path, perms) {
             let _ = std::fs::remove_file(&temp_file_path);
-            return Err(e).context("设置更新文件可执行权限 (0755) 失败");
+            return Err(e).context("Failed to set executable permissions (0755) on update file");
         }
 
         if let Err(e) = std::fs::rename(&temp_file_path, target_path) {
             let _ = std::fs::remove_file(&temp_file_path);
             return Err(e).with_context(|| {
                 format!(
-                    "原子替换可执行文件 '{}' 失败 (若安装在受限系统目录，请尝试使用 sudo 重新运行)",
+                    "Failed to atomically replace executable '{}' (try running with sudo if installed in a protected directory)",
                     target_path.display()
                 )
             });
@@ -344,17 +355,19 @@ pub fn replace_executable(target_path: &Path, binary_bytes: &[u8]) -> Result<()>
 
         if let Err(e) = std::fs::rename(target_path, &old_exe) {
             let _ = std::fs::remove_file(&temp_file_path);
-            return Err(e)
-                .with_context(|| format!("重命名旧版本文件至 {} 失败", old_exe.display()));
+            return Err(e).with_context(|| {
+                format!("Failed to rename old version file to {}", old_exe.display())
+            });
         }
 
         if let Err(e) = std::fs::rename(&temp_file_path, target_path) {
             let _ = std::fs::rename(&old_exe, target_path);
             let _ = std::fs::remove_file(&temp_file_path);
-            return Err(e).with_context(|| "替换新版本文件失败，已尝试恢复原有版本");
+            return Err(e)
+                .with_context(|| "Failed to replace with new binary; restored previous version");
         }
 
-        // 尝试清理 .old 文件，若被系统锁定则静默忽略
+        // Clean up .old file; ignore silently if locked by system
         let _ = std::fs::remove_file(&old_exe);
     }
 
@@ -366,7 +379,7 @@ pub fn replace_executable(target_path: &Path, binary_bytes: &[u8]) -> Result<()>
     Ok(())
 }
 
-/// 请求 GitHub API 获取 Release 信息
+/// Request GitHub API for Release information
 pub async fn fetch_github_release(
     client: &reqwest::Client,
     tag: Option<&str>,
@@ -393,11 +406,14 @@ pub async fn fetch_github_release(
         }
     }
 
-    let resp = req.send().await.context("连接 GitHub Release API 失败")?;
+    let resp = req
+        .send()
+        .await
+        .context("Failed to connect to GitHub Release API")?;
     let status = resp.status();
 
     if status == reqwest::StatusCode::NOT_FOUND {
-        // 如果指定 tag 遇到 404，尝试切换是否带 'v' 前缀重试
+        // If specified tag returned 404, retry toggling 'v' prefix
         if let Some(t) = tag {
             let alt_tag = if let Some(stripped) = t.strip_prefix('v') {
                 stripped.to_string()
@@ -424,44 +440,53 @@ pub async fn fetch_github_release(
                     return alt_resp
                         .json::<GithubRelease>()
                         .await
-                        .context("解析 GitHub Release 响应失败");
+                        .context("Failed to parse GitHub Release response");
                 }
             }
         }
-        anyhow::bail!("未找到指定的 Release 版本 (HTTP 404)。请确认该版本是否已发布。");
+        anyhow::bail!(
+            "Specified release not found (HTTP 404). Please ensure this release is published."
+        );
     }
 
     if status == reqwest::StatusCode::FORBIDDEN {
         let body = resp.text().await.unwrap_or_default();
         anyhow::bail!(
-            "GitHub API 请求受限 (HTTP 403): {}。如触发频控，可设置 GITHUB_TOKEN 环境变量。",
+            "GitHub API rate limit exceeded (HTTP 403): {}. Set GITHUB_TOKEN environment variable to avoid rate limits.",
             body
         );
     }
 
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("请求 GitHub Release API 失败 (HTTP {}): {}", status, body);
+        anyhow::bail!(
+            "Failed to fetch GitHub Release API (HTTP {}): {}",
+            status,
+            body
+        );
     }
 
     resp.json::<GithubRelease>()
         .await
-        .context("解析 GitHub Release 响应失败")
+        .context("Failed to parse GitHub Release response")
 }
 
-/// 执行 update 主流程
+/// Execute main update process
 pub async fn handle_update(args: UpdateArgs) -> Result<()> {
     let current_ver = env!("CARGO_PKG_VERSION");
     let target = current_target()?;
-    let current_exe = std::env::current_exe().context("无法获取当前运行程序路径")?;
+    let current_exe = std::env::current_exe().context("Unable to get current executable path")?;
     let source = detect_install_source(&current_exe);
 
-    println!("{} 正在检查 GitHub Releases 最新版本...", "→".cyan().bold());
+    println!(
+        "{} Checking for updates from GitHub Releases...",
+        "→".cyan().bold()
+    );
 
     let client = reqwest::Client::builder()
         .user_agent(format!("agent-switch/{}", current_ver))
         .build()
-        .context("构建 HTTP 客户端失败")?;
+        .context("Failed to build HTTP client")?;
 
     let release = fetch_github_release(&client, args.tag.as_deref()).await?;
     let remote_tag = release.tag_name.trim();
@@ -478,25 +503,30 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
         println!();
         println!(
             "{}",
-            "=== agent-switch (ags) 版本检查报告 ===".bold().cyan()
+            "=== agent-switch (ags) Version Check Report ==="
+                .bold()
+                .cyan()
         );
-        println!("当前本地版本: {}", display_current.yellow());
-        println!("远端目标版本: {}", display_remote.green().bold());
+        println!("Current version: {}", display_current.yellow());
+        println!("Target version:  {}", display_remote.green().bold());
         match cmp {
             Ordering::Less => {
-                println!("版本状态:     {}", "发现新版本，建议更新！".green().bold());
                 println!(
-                    "更新命令:     运行 {} 执行自动更新",
+                    "Version status:  {}",
+                    "New version available, update recommended!".green().bold()
+                );
+                println!(
+                    "Update command:  Run {} to perform automatic update",
                     "ags update".cyan().bold()
                 );
             }
             Ordering::Equal => {
-                println!("版本状态:     {}", "当前已是最新版本".green());
+                println!("Version status:  {}", "Already up to date".green());
             }
             Ordering::Greater => {
                 println!(
-                    "版本状态:     {}",
-                    "本地版本高于远端 Release (开发构建)".yellow()
+                    "Version status:  {}",
+                    "Local version is ahead of remote Release (dev build)".yellow()
                 );
             }
         }
@@ -507,7 +537,7 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
                     println!();
                     println!(
                         "{}",
-                        "提示: 当前通过 Homebrew 安装，可使用 brew update && brew upgrade agent-switch 进行更新"
+                        "Hint: Currently installed via Homebrew. Run `brew update && brew upgrade agent-switch` to update."
                             .yellow()
                     );
                 }
@@ -515,7 +545,7 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
                     println!();
                     println!(
                         "{}",
-                        "提示: 当前通过 Cargo 安装，可使用 cargo install --force agent-switch 进行更新"
+                        "Hint: Currently installed via Cargo. Run `cargo install --force agent-switch` to update."
                             .yellow()
                     );
                 }
@@ -523,7 +553,7 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
                     println!();
                     println!(
                         "{}",
-                        "提示: 当前检测到本地开发版本，建议通过源码编译或加 -f/--force 覆盖"
+                        "Hint: Local development build detected. Build from source or run with -f/--force to overwrite."
                             .yellow()
                     );
                 }
@@ -538,13 +568,13 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
         match source {
             InstallSource::Homebrew => {
                 println!(
-                    "{} 目标版本: {} (当前版本: {})",
+                    "{} Target version: {} (Current version: {})",
                     "→".cyan().bold(),
                     display_remote.green().bold(),
                     display_current.yellow()
                 );
                 println!(
-                    "{} 当前通过 Homebrew 安装，请使用以下命令更新：\n  {}\n若要强制通过 GitHub Releases 覆盖自替换二进制，请使用 {}。",
+                    "{} Currently installed via Homebrew. Please update using:\n  {}\nTo force self-update and replace binary from GitHub Releases, run {}.",
                     "i".cyan().bold(),
                     "brew update && brew upgrade agent-switch".green().bold(),
                     "ags update --force".cyan().bold()
@@ -553,13 +583,13 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
             }
             InstallSource::Cargo => {
                 println!(
-                    "{} 目标版本: {} (当前版本: {})",
+                    "{} Target version: {} (Current version: {})",
                     "→".cyan().bold(),
                     display_remote.green().bold(),
                     display_current.yellow()
                 );
                 println!(
-                    "{} 当前通过 Cargo 安装，请使用以下命令更新：\n  {}\n若要强制通过 GitHub Releases 覆盖自替换二进制，请使用 {}。",
+                    "{} Currently installed via Cargo. Please update using:\n  {}\nTo force self-update and replace binary from GitHub Releases, run {}.",
                     "i".cyan().bold(),
                     "cargo install --force agent-switch".green().bold(),
                     "ags update --force".cyan().bold()
@@ -568,13 +598,13 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
             }
             InstallSource::DevBuild => {
                 println!(
-                    "{} 目标版本: {} (当前版本: {})",
+                    "{} Target version: {} (Current version: {})",
                     "→".cyan().bold(),
                     display_remote.green().bold(),
                     display_current.yellow()
                 );
                 println!(
-                    "{} 检测到本地开发版本，建议通过源码编译或加 {} 覆盖。",
+                    "{} Local development build detected. Build from source or run with {} to overwrite.",
                     "!".yellow().bold(),
                     "ags update --force".cyan().bold()
                 );
@@ -593,14 +623,14 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
     if !can_update {
         if cmp == Ordering::Equal {
             println!(
-                "{} 当前已是最新版本 ({})。若要强制重新安装，请使用 {}。",
+                "{} Already up to date ({}). Run {} to reinstall.",
                 "✓".green().bold(),
                 display_remote.green(),
                 "ags update --force".cyan().bold()
             );
         } else {
             println!(
-                "{} 当前本地版本 ({}) 高于远端目标版本 ({})。若要强制覆盖，请使用 {}。",
+                "{} Current version ({}) is ahead of target version ({}). Run {} to force overwrite.",
                 "!".yellow().bold(),
                 display_current.yellow(),
                 display_remote.cyan(),
@@ -611,25 +641,25 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
     }
 
     println!(
-        "{} 目标版本: {} (当前版本: {})",
+        "{} Target version: {} (Current version: {})",
         "→".cyan().bold(),
         display_remote.green().bold(),
         display_current.yellow()
     );
-    println!("{} 目标平台: {}", "→".cyan().bold(), target.yellow());
+    println!("{} Target platform: {}", "→".cyan().bold(), target.yellow());
 
     let asset = find_matching_asset(&release.assets, target).ok_or_else(|| {
         let available: Vec<&str> = release.assets.iter().map(|a| a.name.as_str()).collect();
         anyhow::anyhow!(
-            "在 Release {} 中未找到适用于当前平台 ({}) 的构建资产。\n可用文件列表: {:?}",
-            display_remote,
+            "No suitable release asset found for platform ({}) in Release {}.\nAvailable assets: {:?}",
             target,
+            display_remote,
             available
         )
     })?;
 
     println!(
-        "{} 正在下载构建资产: {} ...",
+        "{} Downloading release asset: {} ...",
         "→".cyan().bold(),
         asset.name.cyan().bold()
     );
@@ -638,16 +668,24 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
         .get(&asset.browser_download_url)
         .send()
         .await
-        .with_context(|| format!("下载构建资产失败: {}", asset.browser_download_url))?;
+        .with_context(|| {
+            format!(
+                "Failed to download release asset: {}",
+                asset.browser_download_url
+            )
+        })?;
 
     if !resp.status().is_success() {
-        anyhow::bail!("下载资产失败 (HTTP {})", resp.status());
+        anyhow::bail!("Failed to download asset (HTTP {})", resp.status());
     }
 
-    let bytes = resp.bytes().await.context("读取下载数据失败")?;
+    let bytes = resp
+        .bytes()
+        .await
+        .context("Failed to read download response body")?;
     let size_kb = bytes.len() as f64 / 1024.0;
     println!(
-        "{} 下载完成 ({:.1} KB)，正在校验并解压可执行文件...",
+        "{} Download complete ({:.1} KB), verifying and unpacking executable...",
         "✓".green().bold(),
         size_kb
     );
@@ -655,7 +693,7 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
     let binary_bytes = extract_binary(&asset.name, &bytes)?;
 
     println!(
-        "{} 正在自我替换当前程序: {} ...",
+        "{} Replacing executable: {} ...",
         "→".cyan().bold(),
         current_exe.display().to_string().yellow()
     );
@@ -664,12 +702,12 @@ pub async fn handle_update(args: UpdateArgs) -> Result<()> {
 
     println!();
     println!(
-        "{} 成功更新 ags 至版本 {}！",
+        "{} Successfully updated ags to version {}!",
         "✓".green().bold(),
         display_remote.green().bold()
     );
     println!(
-        "可执行文件位置: {}",
+        "Executable path: {}",
         current_exe.display().to_string().cyan()
     );
 
@@ -727,7 +765,7 @@ mod tests {
             Ordering::Equal
         );
 
-        // 次版本与主版本对比
+        // Minor and major version comparison
         assert_eq!(compare_versions("0.1.9", "0.2.0").unwrap(), Ordering::Less);
         assert_eq!(
             compare_versions("1.0.0", "0.9.9").unwrap(),
@@ -738,7 +776,7 @@ mod tests {
             Ordering::Greater
         );
 
-        // 预发布版本对比
+        // Pre-release version comparison
         assert_eq!(
             compare_versions("1.0.0-beta.1", "1.0.0").unwrap(),
             Ordering::Less
@@ -752,7 +790,7 @@ mod tests {
             Ordering::Less
         );
 
-        // 构建元数据忽略
+        // Build metadata ignored
         assert_eq!(
             compare_versions("1.0.0+build1", "1.0.0+build2").unwrap(),
             Ordering::Equal
@@ -784,7 +822,7 @@ mod tests {
             },
         ];
 
-        // 匹配 linux musl
+        // Match linux musl
         let matched = find_matching_asset(&assets, "x86_64-unknown-linux-musl");
         assert!(matched.is_some());
         assert_eq!(
@@ -792,7 +830,7 @@ mod tests {
             "ags-0.2.0-x86_64-unknown-linux-musl.tar.gz"
         );
 
-        // 匹配 windows
+        // Match windows
         let matched = find_matching_asset(&assets, "x86_64-pc-windows-msvc");
         assert!(matched.is_some());
         assert_eq!(
@@ -800,12 +838,12 @@ mod tests {
             "ags-0.2.0-x86_64-pc-windows-msvc.zip"
         );
 
-        // 匹配 macos
+        // Match macos
         let matched = find_matching_asset(&assets, "aarch64-apple-darwin");
         assert!(matched.is_some());
         assert_eq!(matched.unwrap().name, "ags-aarch64-apple-darwin");
 
-        // 未匹配
+        // Unmatched
         let matched = find_matching_asset(&assets, "armv7-unknown-linux-gnueabihf");
         assert!(matched.is_none());
     }
@@ -818,7 +856,7 @@ mod tests {
             size: Some(1024),
         }];
 
-        // 当只有 gnu 时，musl 目标回退到 gnu
+        // Fallback to gnu when only gnu is present
         let matched = find_matching_asset(&assets, "x86_64-unknown-linux-musl");
         assert!(matched.is_some());
         assert_eq!(
@@ -831,7 +869,7 @@ mod tests {
     fn test_extract_binary_tar_gz() {
         let dummy_binary = b"#!/bin/sh\necho 'new ags binary'";
 
-        // 构建内存 tar.gz
+        // Build in-memory tar.gz
         let mut tar_builder = tar::Builder::new(Vec::new());
         let mut header = tar::Header::new_gnu();
         header.set_path("ags-0.2.0/ags").unwrap();
@@ -855,7 +893,7 @@ mod tests {
     fn test_extract_binary_zip() {
         let dummy_binary = b"MZ-test-windows-executable";
 
-        // 构建内存 zip
+        // Build in-memory zip
         let mut zip_buf = std::io::Cursor::new(Vec::new());
         {
             let mut zip = zip::ZipWriter::new(&mut zip_buf);

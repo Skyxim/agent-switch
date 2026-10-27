@@ -219,12 +219,14 @@ pub fn render_account_table(items: &[AccountTableItem], options: &AccountTableOp
     }
 
     if items.is_empty() {
-        let app_name = options.app_display_name.as_deref().unwrap_or("account");
-        let default_empty = format!(
-            "No saved {} accounts. Use `ags {} add <name>` to add one.",
-            app_name,
-            app_name.to_lowercase()
-        );
+        let default_empty = match &options.app_display_name {
+            Some(app_name) => format!(
+                "No saved {} accounts. Use `ags {} add <name>` to add one.",
+                app_name,
+                app_name.to_lowercase()
+            ),
+            None => "No accounts found.".to_string(),
+        };
         let msg = options.empty_message.as_deref().unwrap_or(&default_empty);
         out.push(format!("  {}", msg.dimmed()));
         return out.join("\n");

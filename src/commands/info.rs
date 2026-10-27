@@ -14,13 +14,9 @@ pub fn handle_info(base_dir: &Path, crypto: &dyn CryptoProvider) -> Result<()> {
         base_dir.display().to_string().yellow()
     );
 
-    let primary_key_set = env::var(ENV_VAR_NAME)
+    let env_key_set = env::var(ENV_VAR_NAME)
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false);
-    let legacy_key_set = env::var(crate::crypto::env::LEGACY_ENV_VAR_NAME)
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false);
-    let env_key_set = primary_key_set || legacy_key_set;
 
     let engine_desc = if crypto.name() == "env" {
         if env_key_set {
