@@ -13,6 +13,7 @@ static TEST_MUTEX: Mutex<()> = Mutex::new(());
 struct EnvCleaner {
     saved_ags_home: Option<String>,
     saved_xdg_config_home: Option<String>,
+    saved_ags_crypto_provider: Option<String>,
     saved_codex_auth_path: Option<String>,
     saved_codex_home: Option<String>,
     saved_antigravity_home: Option<String>,
@@ -25,6 +26,7 @@ impl EnvCleaner {
         Self {
             saved_ags_home: env::var("AGS_HOME").ok(),
             saved_xdg_config_home: env::var("XDG_CONFIG_HOME").ok(),
+            saved_ags_crypto_provider: env::var("AGS_CRYPTO_PROVIDER").ok(),
             saved_codex_auth_path: env::var("CODEX_AUTH_PATH").ok(),
             saved_codex_home: env::var("CODEX_HOME").ok(),
             saved_antigravity_home: env::var("ANTIGRAVITY_HOME").ok(),
@@ -38,6 +40,7 @@ impl Drop for EnvCleaner {
     fn drop(&mut self) {
         Self::restore("AGS_HOME", &self.saved_ags_home);
         Self::restore("XDG_CONFIG_HOME", &self.saved_xdg_config_home);
+        Self::restore("AGS_CRYPTO_PROVIDER", &self.saved_ags_crypto_provider);
         Self::restore("CODEX_AUTH_PATH", &self.saved_codex_auth_path);
         Self::restore("CODEX_HOME", &self.saved_codex_home);
         Self::restore("ANTIGRAVITY_HOME", &self.saved_antigravity_home);
@@ -191,6 +194,7 @@ fn test_sandbox_file_read_write() {
         env::set_var("ANTIGRAVITY_HOME", agy_home.to_str().unwrap());
         env::remove_var("AGY_HOME");
         env::remove_var("AGY_KEYRING_DATA");
+        env::remove_var("AGS_CRYPTO_PROVIDER");
     }
 
     // Verify AGS base directory configuration read/write isolation

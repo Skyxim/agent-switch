@@ -61,8 +61,7 @@ impl CryptoManager {
         name: Option<&str>,
         explicit_key: Option<&str>,
     ) -> Box<dyn CryptoProvider> {
-        let env_provider = std::env::var("AGS_CRYPTO_PROVIDER").ok();
-        let selected = name.or(env_provider.as_deref()).unwrap_or("env");
+        let selected = name.unwrap_or("env");
 
         match StoreEngine::parse(selected) {
             Ok(StoreEngine::Plain) => Box::new(plain::PlaintextCryptoProvider),
@@ -83,5 +82,40 @@ impl CryptoManager {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_crypto_manager_parameter_priority() {
+        let plain = CryptoManager::get_provider(Some("plain"));
+        assert_eq!(plain.name(), "plain");
+
+        let env = CryptoManager::get_provider(Some("env"));
+        assert_eq!(env.name(), "env");
+
+        // When name is None, defaults to "env" purely by parameter fallback
+        let default_prov = CryptoManager::get_provider(None);
+        assert_eq!(default_prov.name(), "env");
+    }
+
+    #[test]
+    fn test_crypto_manager_create_provider_with_explicit_key() {
+        let provider = CryptoManager::create_provider(Some("env"), Some("test-key-123"));
+        assert_eq!(provider.name(), "env");
+        assert!(provider.description().contains("AES-256-GCM"));
+    }
+
+    #[test]
+    fn test_store_engine_parsing() {
+        assert_eq!(StoreEngine::parse("env").unwrap(), StoreEngine::Env);
+        assert_eq!(StoreEngine::parse("plain").unwrap(), StoreEngine::Plain);
+        assert_eq!(StoreEngine::parse("none").unwrap(), StoreEngine::Plain);
+        assert_eq!(StoreEngine::parse("system").unwrap(), StoreEngine::System);
+        assert_eq!(StoreEngine::parse("keyring").unwrap(), StoreEngine::System);
+        assert!(StoreEngine::parse("invalid").is_err());
     }
 }

@@ -395,15 +395,18 @@ pub async fn fetch_github_release(
         None => "https://api.github.com/repos/Skyxim/agent-switch/releases/latest".to_string(),
     };
 
+    let token = std::env::var("GITHUB_TOKEN")
+        .or_else(|_| std::env::var("GH_TOKEN"))
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+        .map(|t| t.trim().to_string());
+
     let mut req = client
         .get(&url)
         .header(reqwest::header::ACCEPT, "application/vnd.github.v3+json");
 
-    if let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN")) {
-        let token = token.trim();
-        if !token.is_empty() {
-            req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", token));
-        }
+    if let Some(tok) = &token {
+        req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", tok));
     }
 
     let resp = req
@@ -427,13 +430,8 @@ pub async fn fetch_github_release(
             let mut alt_req = client
                 .get(&alt_url)
                 .header(reqwest::header::ACCEPT, "application/vnd.github.v3+json");
-            if let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN"))
-            {
-                let token = token.trim();
-                if !token.is_empty() {
-                    alt_req =
-                        alt_req.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", token));
-                }
+            if let Some(tok) = &token {
+                alt_req = alt_req.header(reqwest::header::AUTHORIZATION, format!("Bearer {}", tok));
             }
             if let Ok(alt_resp) = alt_req.send().await {
                 if alt_resp.status().is_success() {

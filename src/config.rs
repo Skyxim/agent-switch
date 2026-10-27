@@ -5,12 +5,28 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crypto_provider: Option<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub active_agents: HashMap<String, String>,
+}
+
+fn resolve_crypto_provider_from_env() -> Option<String> {
+    env::var("AGS_CRYPTO_PROVIDER")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim().to_string())
+}
+
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self {
+            crypto_provider: resolve_crypto_provider_from_env(),
+            active_agents: HashMap::new(),
+        }
+    }
 }
 
 /// Resolves the base configuration directory according to the priority:
@@ -78,8 +94,16 @@ pub fn load_global_config(base_dir: &Path) -> Result<GlobalConfig> {
     }
     let data = fs::read_to_string(&path)
         .with_context(|| format!("Failed to read global config: {}", path.display()))?;
-    let config: GlobalConfig = serde_json::from_str(&data)
+    let mut config: GlobalConfig = serde_json::from_str(&data)
         .with_context(|| format!("Failed to parse global config: {}", path.display()))?;
+    if config
+        .crypto_provider
+        .as_deref()
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+    {
+        config.crypto_provider = resolve_crypto_provider_from_env();
+    }
     Ok(config)
 }
 
@@ -103,6 +127,7 @@ pub mod tests {
         saved_ags_home: Option<String>,
         saved_xdg_config_home: Option<String>,
         saved_home: Option<String>,
+        saved_crypto_provider: Option<String>,
     }
 
     impl EnvGuard {
@@ -111,6 +136,7 @@ pub mod tests {
                 saved_ags_home: env::var("AGS_HOME").ok(),
                 saved_xdg_config_home: env::var("XDG_CONFIG_HOME").ok(),
                 saved_home: env::var("HOME").ok(),
+                saved_crypto_provider: env::var("AGS_CRYPTO_PROVIDER").ok(),
             }
         }
     }
@@ -128,6 +154,10 @@ pub mod tests {
             match &self.saved_home {
                 Some(val) => unsafe { env::set_var("HOME", val) },
                 None => unsafe { env::remove_var("HOME") },
+            }
+            match &self.saved_crypto_provider {
+                Some(val) => unsafe { env::set_var("AGS_CRYPTO_PROVIDER", val) },
+                None => unsafe { env::remove_var("AGS_CRYPTO_PROVIDER") },
             }
         }
     }
@@ -261,5 +291,87 @@ pub mod tests {
 
         let p6 = resolve_base_dir(None, None, None, None);
         assert_eq!(p6, PathBuf::from(".config").join("agent-switch"));
+    }
+
+    #[test]
+    fn test_global_config_default_without_env() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::new();
+
+        unsafe {
+            env::remove_var("AGS_CRYPTO_PROVIDER");
+        }
+
+        let cfg = GlobalConfig::default();
+        assert_eq!(cfg.crypto_provider, None);
+        assert!(cfg.active_agents.is_empty());
+    }
+
+    #[test]
+    fn test_global_config_default_with_env() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::new();
+
+        unsafe {
+            env::set_var("AGS_CRYPTO_PROVIDER", "plain");
+        }
+
+        let cfg = GlobalConfig::default();
+        assert_eq!(cfg.crypto_provider.as_deref(), Some("plain"));
+    }
+
+    #[test]
+    fn test_global_config_default_with_whitespace_env() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::new();
+
+        unsafe {
+            env::set_var("AGS_CRYPTO_PROVIDER", "   ");
+        }
+
+        let cfg = GlobalConfig::default();
+        assert_eq!(cfg.crypto_provider, None);
+    }
+
+    #[test]
+    fn test_load_global_config_fallback_to_env() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::new();
+
+        let temp = tempfile::tempdir().unwrap();
+
+        unsafe {
+            env::set_var("AGS_CRYPTO_PROVIDER", "plain");
+        }
+
+        // Case 1: config.json doesn't exist
+        let cfg = load_global_config(temp.path()).unwrap();
+        assert_eq!(cfg.crypto_provider.as_deref(), Some("plain"));
+
+        // Case 2: config.json exists without crypto_provider
+        fs::write(temp.path().join("config.json"), "{}").unwrap();
+        let cfg2 = load_global_config(temp.path()).unwrap();
+        assert_eq!(cfg2.crypto_provider.as_deref(), Some("plain"));
+    }
+
+    #[test]
+    fn test_load_global_config_file_overrides_env() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::new();
+
+        let temp = tempfile::tempdir().unwrap();
+
+        unsafe {
+            env::set_var("AGS_CRYPTO_PROVIDER", "env");
+        }
+
+        fs::write(
+            temp.path().join("config.json"),
+            r#"{"crypto_provider":"plain"}"#,
+        )
+        .unwrap();
+
+        let cfg = load_global_config(temp.path()).unwrap();
+        assert_eq!(cfg.crypto_provider.as_deref(), Some("plain"));
     }
 }
