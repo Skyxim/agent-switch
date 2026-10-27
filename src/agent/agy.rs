@@ -217,6 +217,54 @@ impl AgyAgent {
         )
     }
 
+    /// Read all candidate raw credentials from Keyring, environment, and known credential files.
+    pub fn read_all_candidate_credentials_raw() -> Vec<Vec<u8>> {
+        let mut candidates = Vec::new();
+
+        if let Ok(val) = env::var("AGY_KEYRING_DATA") {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                if let Ok(decoded) = BASE64_STANDARD.decode(trimmed) {
+                    candidates.push(decoded);
+                } else {
+                    candidates.push(trimmed.as_bytes().to_vec());
+                }
+            }
+        }
+
+        if let Ok(data) = Self::read_keyring() {
+            if !data.is_empty() {
+                candidates.push(data);
+            }
+        }
+
+        let agy_token_path = Self::default_token_path();
+        if agy_token_path.exists() {
+            if let Ok(content) = fs::read(&agy_token_path) {
+                let trimmed = content.trim_ascii();
+                if !trimmed.is_empty() {
+                    candidates.push(content);
+                }
+            }
+        }
+
+        let oauth_path = Self::default_creds_path();
+        if oauth_path.exists() {
+            if let Ok(content) = fs::read(&oauth_path) {
+                let trimmed = content.trim_ascii();
+                if !trimmed.is_empty() {
+                    if let Ok(converted) = Self::convert_gemini_oauth_json(&content) {
+                        candidates.push(converted);
+                    } else {
+                        candidates.push(content);
+                    }
+                }
+            }
+        }
+
+        candidates
+    }
+
     /// Attempt to read from system keyring (Linux secret-tool, macOS security)
     fn read_keyring() -> Result<Vec<u8>> {
         #[cfg(target_os = "linux")]
@@ -783,19 +831,27 @@ impl AgyAgent {
         is_active: bool,
     ) -> Result<(String, Option<serde_json::Value>, Option<serde_json::Value>)> {
         let mut creds = if is_active {
-            if let Ok(sys_raw) = Self::read_credentials_raw() {
-                if let Ok((sys_key, sys_email)) = Self::parse_identity(&sys_raw) {
+            let mut matched = None;
+            for raw in Self::read_all_candidate_credentials_raw() {
+                if let Ok((sys_key, sys_email)) = Self::parse_identity(&raw) {
                     if sys_key == acc.key || sys_email.eq_ignore_ascii_case(&acc.email) {
-                        serde_json::from_slice::<AgyCreds>(&sys_raw).ok()
-                    } else {
-                        None
+                        if let Ok(c) = serde_json::from_slice::<AgyCreds>(&raw) {
+                            matched = Some(c);
+                            break;
+                        }
                     }
-                } else {
-                    None
                 }
-            } else {
-                None
             }
+            if matched.is_none() {
+                if let Ok(sys_raw) = Self::read_credentials_raw() {
+                    if let Ok((sys_key, sys_email)) = Self::parse_identity(&sys_raw) {
+                        if sys_key == acc.key || sys_email.eq_ignore_ascii_case(&acc.email) {
+                            matched = serde_json::from_slice::<AgyCreds>(&sys_raw).ok();
+                        }
+                    }
+                }
+            }
+            matched
         } else {
             None
         };
@@ -839,12 +895,14 @@ impl AgyAgent {
             .clone()
             .context("No access token present in Antigravity credentials")?;
 
+        let ua = Self::official_user_agent();
+
         // 1. Prioritize loadCodeAssist + retrieveUserQuotaSummary (matches official IDE/UI)
         let mut load_res = client
             .post("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")
             .header("Authorization", format!("Bearer {}", access_token))
             .header("Content-Type", "application/json")
-            .header("User-Agent", "antigravity/cli")
+            .header("User-Agent", &ua)
             .json(&serde_json::json!({
                 "metadata": {
                     "ideType": "ANTIGRAVITY"
@@ -872,7 +930,7 @@ impl AgyAgent {
                 .post("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")
                 .header("Authorization", format!("Bearer {}", access_token))
                 .header("Content-Type", "application/json")
-                .header("User-Agent", "antigravity/cli")
+                .header("User-Agent", &ua)
                 .json(&serde_json::json!({
                     "metadata": {
                         "ideType": "ANTIGRAVITY"
@@ -909,7 +967,7 @@ impl AgyAgent {
             .post("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary")
             .header("Authorization", format!("Bearer {}", access_token))
             .header("Content-Type", "application/json")
-            .header("User-Agent", "antigravity/cli")
+            .header("User-Agent", &ua)
             .json(&serde_json::Value::Object(quota_body.clone()))
             .send()
             .await
@@ -933,7 +991,7 @@ impl AgyAgent {
                 .post("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary")
                 .header("Authorization", format!("Bearer {}", access_token))
                 .header("Content-Type", "application/json")
-                .header("User-Agent", "antigravity/cli")
+                .header("User-Agent", &ua)
                 .json(&serde_json::Value::Object(quota_body))
                 .send()
                 .await
@@ -952,7 +1010,7 @@ impl AgyAgent {
             .post(quota_url)
             .header("Authorization", format!("Bearer {}", access_token))
             .header("Content-Type", "application/json")
-            .header("User-Agent", "antigravity/cli")
+            .header("User-Agent", &ua)
             .json(&serde_json::json!({}))
             .send()
             .await;
@@ -1184,31 +1242,54 @@ impl AgyAgent {
             .context("No access token present in Antigravity credentials")
     }
 
+    /// Official user agent string recognized by Cloud Code backend to return full quota groups.
+    pub fn official_user_agent() -> String {
+        let os = match std::env::consts::OS {
+            "macos" => "darwin",
+            other => other,
+        };
+        let arch = match std::env::consts::ARCH {
+            "x86_64" => "amd64",
+            "aarch64" => "arm64",
+            other => other,
+        };
+        format!(
+            "antigravity/cli/1.11.5 (aidev_client; os_type={}; arch={}; cl=994719654; auth_method=consumer)",
+            os, arch
+        )
+    }
+
     pub fn derive_agy_window_label(bucket: &serde_json::Value) -> String {
         if let Ok(dto) = serde_json::from_value::<AgyQuotaBucketDto>(bucket.clone()) {
             dto.derive_window_label()
-        } else if let Some(rt) = bucket
-            .get("resetTime")
-            .or_else(|| bucket.get("reset_time"))
-            .and_then(|v| v.as_str())
-        {
-            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(rt) {
-                let now = Utc::now();
-                let diff = dt.with_timezone(&Utc) - now;
-                if diff.num_hours() > 24 {
-                    "Weekly Window".to_string()
-                } else if diff.num_hours() > 6 {
-                    "Daily Window".to_string()
-                } else if diff.num_seconds() > 0 {
-                    "5-Hour Window".to_string()
-                } else {
-                    "Window".to_string()
-                }
-            } else {
-                "Window".to_string()
-            }
         } else {
-            "Window".to_string()
+            let text = format!(
+                "{} {} {} {}",
+                bucket.get("window").and_then(|v| v.as_str()).unwrap_or(""),
+                bucket
+                    .get("bucketId")
+                    .or_else(|| bucket.get("bucket_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
+                bucket
+                    .get("displayName")
+                    .or_else(|| bucket.get("display_name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
+                bucket
+                    .get("tokenType")
+                    .or_else(|| bucket.get("token_type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+            )
+            .to_lowercase();
+            if text.contains("week") || text.contains("604800") || text.contains("wtus") {
+                "Weekly Window".to_string()
+            } else if text.contains("5h") || text.contains("18000") || text.contains("five") {
+                "5-Hour Window".to_string()
+            } else {
+                "Weekly Window".to_string()
+            }
         }
     }
 
@@ -2023,18 +2104,20 @@ mod tests {
         let rt_weekly = (now + chrono::Duration::hours(118)).to_rfc3339(); // 4d 22h
         let rt_5h = (now + chrono::Duration::hours(2) + chrono::Duration::minutes(43)).to_rfc3339(); // 2h 43m
 
-        // Direct buckets with 19.2% Weekly (4d 22h) and 65.0% 5h (2h 43m)
+        // Direct buckets with 19.2% Weekly and 65.0% 5h
         let direct_json = serde_json::json!({
             "buckets": [
                 {
                     "modelId": "gemini-2.5-pro",
                     "remainingFraction": 0.192,
-                    "resetTime": rt_weekly
+                    "resetTime": rt_weekly,
+                    "window": "weekly"
                 },
                 {
                     "modelId": "gemini-2.5-flash",
                     "remainingFraction": 0.650,
-                    "resetTime": rt_5h
+                    "resetTime": rt_5h,
+                    "window": "5h"
                 }
             ]
         });
@@ -2058,6 +2141,100 @@ mod tests {
         assert_eq!(q_weekly.display_label, "Weekly");
         assert!((q_weekly.remaining_percent - 19.2).abs() < 0.1);
         assert!(q_weekly.resets_in_text.as_ref().unwrap().contains("4d"));
+    }
+
+    #[test]
+    fn test_parse_agy_quota_groups_wtus_classified_as_weekly_even_with_short_reset_time() {
+        let now = Utc::now();
+        // Reset in 8h 30m (less than 24h, would previously be falsely labeled as Daily)
+        let rt_wtus =
+            (now + chrono::Duration::hours(8) + chrono::Duration::minutes(30)).to_rfc3339();
+
+        let direct_json = serde_json::json!({
+            "buckets": [
+                {
+                    "modelId": "gemini-2.5-flash",
+                    "remainingFraction": 0.1883,
+                    "resetTime": rt_wtus,
+                    "tokenType": "WTUS"
+                }
+            ]
+        });
+
+        let groups = AgyAgent::parse_agy_quota_groups(None, Some(&direct_json));
+        assert_eq!(groups.len(), 1);
+        let gemini_group = &groups[0];
+        assert_eq!(gemini_group.name.as_deref(), Some("Gemini"));
+        assert_eq!(gemini_group.quotas.len(), 1);
+
+        let q = &gemini_group.quotas[0];
+        assert_eq!(q.window_type, "weekly");
+        assert_eq!(q.display_label, "Weekly");
+        assert!((q.remaining_percent - 18.8).abs() < 0.1);
+        assert!(q.resets_in_text.as_ref().unwrap().contains("8h"));
+    }
+
+    #[test]
+    fn test_parse_agy_quota_groups_full_official_summary() {
+        let summary = serde_json::json!({
+            "groups": [
+                {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                        {
+                            "bucketId": "gemini-weekly",
+                            "displayName": "Weekly Limit Remaining",
+                            "window": "weekly",
+                            "remainingFraction": 0.1883,
+                            "resetTime": "2026-10-27T12:59:29Z"
+                        },
+                        {
+                            "bucketId": "gemini-5h",
+                            "displayName": "Five Hour Limit Remaining",
+                            "window": "5h",
+                            "remainingFraction": 1.0,
+                            "resetTime": "2026-10-27T09:40:25Z"
+                        }
+                    ]
+                },
+                {
+                    "displayName": "Claude and GPT models",
+                    "buckets": [
+                        {
+                            "bucketId": "3p-5h",
+                            "displayName": "Five Hour Limit Remaining",
+                            "window": "5h",
+                            "remainingFraction": 1.0,
+                            "resetTime": "2026-10-27T09:40:25Z"
+                        },
+                        {
+                            "bucketId": "3p-weekly",
+                            "displayName": "Weekly Limit Remaining",
+                            "window": "weekly",
+                            "remainingFraction": 1.0,
+                            "resetTime": "2026-11-03T04:40:25Z"
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let groups = AgyAgent::parse_agy_quota_groups(Some(&summary), None);
+        assert_eq!(groups.len(), 2);
+
+        // Group 0: Gemini
+        assert_eq!(groups[0].name.as_deref(), Some("Gemini"));
+        assert_eq!(groups[0].quotas.len(), 2);
+        assert_eq!(groups[0].quotas[0].display_label, "5h");
+        assert_eq!(groups[0].quotas[0].remaining_percent, 100.0);
+        assert_eq!(groups[0].quotas[1].display_label, "Weekly");
+        assert!((groups[0].quotas[1].remaining_percent - 18.8).abs() < 0.1);
+
+        // Group 1: Claude & GPT
+        assert_eq!(groups[1].name.as_deref(), Some("Claude & GPT"));
+        assert_eq!(groups[1].quotas.len(), 2);
+        assert_eq!(groups[1].quotas[0].display_label, "5h");
+        assert_eq!(groups[1].quotas[1].display_label, "Weekly");
     }
 
     #[test]

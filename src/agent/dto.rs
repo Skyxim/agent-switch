@@ -284,62 +284,43 @@ pub struct AgyQuotaBucketDto {
     pub remaining_fraction: Option<f64>,
     #[serde(default, rename = "resetTime", alias = "reset_time")]
     pub reset_time: Option<String>,
+    #[serde(default, rename = "tokenType", alias = "token_type")]
+    pub token_type: Option<String>,
 }
 
 impl AgyQuotaBucketDto {
-    /// Derive human-readable window label matching AGY conventions.
+    /// Derive human-readable window label matching AGY conventions without time-based guessing.
     pub fn derive_window_label(&self) -> String {
+        // 1. Explicit token_type check
+        if let Some(ref tt) = self.token_type {
+            let lower_tt = tt.to_lowercase();
+            if tt.eq_ignore_ascii_case("WTUS")
+                || lower_tt.contains("week")
+                || lower_tt.contains("weekly")
+            {
+                return "Weekly Window".to_string();
+            }
+            if lower_tt.contains("5h") || lower_tt.contains("18000") || lower_tt.contains("five") {
+                return "5-Hour Window".to_string();
+            }
+        }
+
+        // 2. Check text keywords (window / bucket_id / display_name)
         let window_str = self.window.as_deref().unwrap_or("");
         let bucket_id = self.bucket_id.as_deref().unwrap_or("");
         let display_name = self.display_name.as_deref().unwrap_or("");
+        let text = format!("{} {} {}", window_str, bucket_id, display_name).to_lowercase();
 
-        let combined = format!("{} {} {}", window_str, bucket_id, display_name).to_lowercase();
-
-        let time_diff = self.reset_time.as_deref().and_then(|rt| {
-            chrono::DateTime::parse_from_rfc3339(rt).ok().map(|dt| {
-                let now = Utc::now();
-                dt.with_timezone(&Utc) - now
-            })
-        });
-
-        if combined.contains("604800") || combined.contains("week") {
+        if text.contains("604800") || text.contains("week") || text.contains("weekly") {
             "Weekly Window".to_string()
-        } else if combined.contains("86400")
-            || combined.contains("day")
-            || combined.contains("daily")
-        {
-            "Daily Window".to_string()
-        } else if combined.contains("18000") || combined.contains("5h") || combined.contains("five")
-        {
-            if let Some(diff) = time_diff {
-                if diff.num_hours() > 6 {
-                    "Weekly Window".to_string()
-                } else {
-                    "5-Hour Window".to_string()
-                }
-            } else {
-                "5-Hour Window".to_string()
-            }
-        } else if let Some(diff) = time_diff {
-            if diff.num_hours() > 24 {
-                "Weekly Window".to_string()
-            } else if diff.num_hours() > 6 {
-                "Daily Window".to_string()
-            } else if diff.num_seconds() > 0 {
-                "5-Hour Window".to_string()
-            } else if !window_str.is_empty() {
-                format!("{}-Hour Window", window_str)
-            } else if !display_name.is_empty() {
-                display_name.to_string()
-            } else {
-                "Window".to_string()
-            }
-        } else if !window_str.is_empty() {
-            format!("{}-Hour Window", window_str)
+        } else if text.contains("18000") || text.contains("5h") || text.contains("five") {
+            "5-Hour Window".to_string()
         } else if !display_name.is_empty() {
             display_name.to_string()
+        } else if !window_str.is_empty() {
+            format!("{}-Hour Window", window_str)
         } else {
-            "Window".to_string()
+            "Weekly Window".to_string()
         }
     }
 }
@@ -472,55 +453,95 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_window_label_with_reset_time_heuristics() {
+    fn test_derive_window_label_metadata_matching() {
         let now = Utc::now();
         let in_4_days = (now + chrono::Duration::hours(118)).to_rfc3339();
         let in_2_hours =
             (now + chrono::Duration::hours(2) + chrono::Duration::minutes(43)).to_rfc3339();
         let in_10_hours = (now + chrono::Duration::hours(10)).to_rfc3339();
 
-        // 1. Bucket with 4d reset time, no window or display_name -> "Weekly Window"
-        let bucket_4d = AgyQuotaBucketDto {
+        // 1. Bucket with "weekly" in window -> "Weekly Window"
+        let bucket_weekly = AgyQuotaBucketDto {
             bucket_id: None,
             display_name: None,
             model_id: Some("gemini-2.5-pro".to_string()),
-            window: None,
+            window: Some("weekly".to_string()),
             remaining_fraction: Some(0.192),
             reset_time: Some(in_4_days.clone()),
+            token_type: None,
         };
-        assert_eq!(bucket_4d.derive_window_label(), "Weekly Window");
+        assert_eq!(bucket_weekly.derive_window_label(), "Weekly Window");
 
-        // 2. Bucket with 4d reset time, but misleading "5h" keyword in window -> corrected to "Weekly Window"
-        let bucket_misleading_5h = AgyQuotaBucketDto {
+        // 2. Bucket with "5h" in window -> "5-Hour Window"
+        let bucket_5h = AgyQuotaBucketDto {
             bucket_id: Some("gemini-window".to_string()),
             display_name: None,
             model_id: Some("gemini-2.5-pro".to_string()),
             window: Some("5h".to_string()),
             remaining_fraction: Some(0.192),
             reset_time: Some(in_4_days),
+            token_type: None,
         };
-        assert_eq!(bucket_misleading_5h.derive_window_label(), "Weekly Window");
+        assert_eq!(bucket_5h.derive_window_label(), "5-Hour Window");
 
-        // 3. Bucket with 2h reset time and no week tag -> "5-Hour Window"
-        let bucket_2h = AgyQuotaBucketDto {
-            bucket_id: None,
+        // 3. Bucket with "gemini-5h" in bucket_id -> "5-Hour Window"
+        let bucket_gemini_5h = AgyQuotaBucketDto {
+            bucket_id: Some("gemini-5h".to_string()),
             display_name: None,
             model_id: Some("gemini-2.5-flash".to_string()),
             window: None,
             remaining_fraction: Some(0.65),
-            reset_time: Some(in_2_hours),
+            reset_time: Some(in_2_hours.clone()),
+            token_type: None,
         };
-        assert_eq!(bucket_2h.derive_window_label(), "5-Hour Window");
+        assert_eq!(bucket_gemini_5h.derive_window_label(), "5-Hour Window");
 
-        // 4. Bucket with 10h reset time and no keywords -> "Daily Window"
-        let bucket_10h = AgyQuotaBucketDto {
+        // 4. Bucket with WTUS token_type -> "Weekly Window"
+        let bucket_wtus = AgyQuotaBucketDto {
+            bucket_id: None,
+            display_name: None,
+            model_id: Some("gemini-2.5-pro".to_string()),
+            window: None,
+            remaining_fraction: Some(0.188),
+            reset_time: Some(in_10_hours.clone()),
+            token_type: Some("WTUS".to_string()),
+        };
+        assert_eq!(bucket_wtus.derive_window_label(), "Weekly Window");
+
+        // 5. Bucket with no keywords -> default "Weekly Window"
+        let bucket_fallback = AgyQuotaBucketDto {
             bucket_id: None,
             display_name: None,
             model_id: Some("gemini-2.5-pro".to_string()),
             window: None,
             remaining_fraction: Some(0.5),
             reset_time: Some(in_10_hours),
+            token_type: None,
         };
-        assert_eq!(bucket_10h.derive_window_label(), "Daily Window");
+        assert_eq!(bucket_fallback.derive_window_label(), "Weekly Window");
+
+        // 6. Bucket with token_type containing "weekly" case-insensitively -> "Weekly Window"
+        let bucket_weekly_token = AgyQuotaBucketDto {
+            bucket_id: None,
+            display_name: None,
+            model_id: Some("gemini-2.5-pro".to_string()),
+            window: None,
+            remaining_fraction: Some(0.5),
+            reset_time: Some(in_2_hours.clone()),
+            token_type: Some("WEEKLY".to_string()),
+        };
+        assert_eq!(bucket_weekly_token.derive_window_label(), "Weekly Window");
+
+        // 7. Bucket with WTUS token_type taking precedence over window text -> "Weekly Window"
+        let bucket_wtus_5h = AgyQuotaBucketDto {
+            bucket_id: None,
+            display_name: None,
+            model_id: Some("gemini-2.5-pro".to_string()),
+            window: Some("5h".to_string()),
+            remaining_fraction: Some(0.5),
+            reset_time: Some(in_2_hours),
+            token_type: Some("wtus".to_string()),
+        };
+        assert_eq!(bucket_wtus_5h.derive_window_label(), "Weekly Window");
     }
 }
