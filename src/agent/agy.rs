@@ -1187,6 +1187,26 @@ impl AgyAgent {
     pub fn derive_agy_window_label(bucket: &serde_json::Value) -> String {
         if let Ok(dto) = serde_json::from_value::<AgyQuotaBucketDto>(bucket.clone()) {
             dto.derive_window_label()
+        } else if let Some(rt) = bucket
+            .get("resetTime")
+            .or_else(|| bucket.get("reset_time"))
+            .and_then(|v| v.as_str())
+        {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(rt) {
+                let now = Utc::now();
+                let diff = dt.with_timezone(&Utc) - now;
+                if diff.num_hours() > 24 {
+                    "Weekly Window".to_string()
+                } else if diff.num_hours() > 6 {
+                    "Daily Window".to_string()
+                } else if diff.num_seconds() > 0 {
+                    "5-Hour Window".to_string()
+                } else {
+                    "Window".to_string()
+                }
+            } else {
+                "Window".to_string()
+            }
         } else {
             "Window".to_string()
         }
@@ -1254,11 +1274,12 @@ impl AgyAgent {
     }
 
     fn window_order(label: &str) -> usize {
-        if label.contains("5-Hour") || label.contains("5h") {
+        let lower = label.to_lowercase();
+        if lower.contains("5-hour") || lower.contains("5h") {
             0
-        } else if label.contains("Daily") || label.contains("Day") {
+        } else if lower.contains("daily") || lower.contains("day") {
             1
-        } else if label.contains("Weekly") || label.contains("Week") {
+        } else if lower.contains("weekly") || lower.contains("week") {
             2
         } else {
             3
@@ -1354,170 +1375,65 @@ impl AgyAgent {
             }
         }
 
-        // 动态检查是否缺失 Gemini / Claude & GPT 等组，若缺失则尝试从 direct_val 补充
+        // 补充来自 direct_val 的配额（如 Gemini 或未由 summary 返回的模型配额）
         if let Some(direct) = direct_val {
             if let Some(direct_buckets) = direct.get("buckets").and_then(|b| b.as_array()) {
-                // 查找已存在的统一周重置时间（例如 3p-weekly 或套餐重置时间）
-                let shared_weekly_reset = groups
-                    .iter()
-                    .flat_map(|g| &g.buckets)
-                    .find(|b| b.label.contains("Weekly") && !b.reset_time.is_empty())
-                    .map(|b| b.reset_time.clone())
-                    .unwrap_or_default();
-
-                // 1. Gemini 核心组：确保同时具备 5-Hour Window 与 Weekly Window
-                let gemini_group_idx = groups
-                    .iter()
-                    .position(|g| g.name.to_lowercase().contains("gemini"));
-
-                if let Some(idx) = gemini_group_idx {
-                    let has_weekly = groups[idx]
-                        .buckets
-                        .iter()
-                        .any(|b| b.label.contains("Weekly"));
-                    if !has_weekly {
-                        let five_hour_used = groups[idx]
-                            .buckets
-                            .iter()
-                            .find(|b| b.label.contains("5-Hour"))
-                            .map(|b| (1.0 - b.rem_frac) * 100.0)
-                            .unwrap_or(12.0);
-                        let weekly_used =
-                            (17.0 + (five_hour_used - 9.0).max(0.0) * 0.25).clamp(0.0, 100.0);
-                        let rem_frac = (100.0 - weekly_used) / 100.0;
-                        groups[idx].buckets.push(BucketInfo {
-                            label: "Weekly Window".to_string(),
-                            rem_frac,
-                            reset_time: shared_weekly_reset.clone(),
-                        });
-                    }
-                } else {
-                    if let Some(matched) = direct_buckets.iter().find(|b| {
-                        let mid = b.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
-                        mid.to_lowercase().contains("gemini")
-                    }) {
-                        if let Some(rem_frac_5h) =
-                            matched.get("remainingFraction").and_then(|v| v.as_f64())
-                        {
-                            let reset_time_5h = matched
-                                .get("resetTime")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let five_hour_used = ((1.0 - rem_frac_5h) * 100.0).clamp(0.0, 100.0);
-
-                            let (rem_frac_weekly, reset_time_weekly) = if let Some(wb) =
-                                direct_buckets.iter().find(|b| {
-                                    let mid = b
-                                        .get("modelId")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_lowercase();
-                                    let bid = b
-                                        .get("bucketId")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_lowercase();
-                                    (mid.contains("gemini") || bid.contains("gemini"))
-                                        && (mid.contains("week") || bid.contains("week"))
-                                }) {
-                                let rem = wb
-                                    .get("remainingFraction")
-                                    .and_then(|v| v.as_f64())
-                                    .unwrap_or(0.83);
-                                let rt = wb
-                                    .get("resetTime")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                (rem, rt)
-                            } else {
-                                let weekly_used = (17.0 + (five_hour_used - 9.0).max(0.0) * 0.25)
-                                    .clamp(0.0, 100.0);
-                                let rem = (100.0 - weekly_used) / 100.0;
-                                (rem, shared_weekly_reset.clone())
-                            };
-
-                            groups.push(GroupInfo {
-                                name: "Gemini".to_string(),
-                                buckets: vec![
-                                    BucketInfo {
-                                        label: "5-Hour Window".to_string(),
-                                        rem_frac: rem_frac_5h,
-                                        reset_time: reset_time_5h,
-                                    },
-                                    BucketInfo {
-                                        label: "Weekly Window".to_string(),
-                                        rem_frac: rem_frac_weekly,
-                                        reset_time: reset_time_weekly,
-                                    },
-                                ],
-                            });
-                        }
-                    }
-                }
-
-                // 2. Claude & GPT 组 (若 summary 未返回时兜底)
-                let has_claude_gpt = groups.iter().any(|g| {
-                    let n = g.name.to_lowercase();
-                    n.contains("claude") || n.contains("gpt")
-                });
-                if !has_claude_gpt {
-                    if let Some(matched) = direct_buckets.iter().find(|b| {
-                        let mid = b.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
-                        let m = mid.to_lowercase();
-                        m.contains("claude") || m.contains("gpt")
-                    }) {
-                        if let Some(rem_frac) =
-                            matched.get("remainingFraction").and_then(|v| v.as_f64())
-                        {
-                            let reset_time = matched
-                                .get("resetTime")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            groups.push(GroupInfo {
-                                name: "Claude & GPT".to_string(),
-                                buckets: vec![BucketInfo {
-                                    label: "5-Hour Window".to_string(),
-                                    rem_frac,
-                                    reset_time,
-                                }],
-                            });
-                        }
-                    }
-                }
-
-                // 3. 其他非探针模型 (作为第 3 组及更多组依次追加)
                 for b in direct_buckets {
-                    let mid = b.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
+                    let mid = b
+                        .get("modelId")
+                        .or_else(|| b.get("model_id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let lower = mid.to_lowercase();
-                    if lower.starts_with("chat_") || lower.starts_with("tab_") {
-                        continue;
-                    }
-                    if lower.contains("gemini") || lower.contains("claude") || lower.contains("gpt")
+                    if lower.starts_with("chat_")
+                        || lower.starts_with("tab_")
+                        || mid.trim().is_empty()
                     {
                         continue;
                     }
-                    let group_title = Self::format_group_title(mid);
-                    let already_exists = groups.iter().any(|g| g.name == group_title);
-                    if !already_exists {
-                        if let Some(rem_frac) = b.get("remainingFraction").and_then(|v| v.as_f64())
+                    let rem_frac = match b
+                        .get("remainingFraction")
+                        .or_else(|| b.get("remaining_fraction"))
+                        .and_then(|v| v.as_f64())
+                    {
+                        Some(f) => f,
+                        None => continue,
+                    };
+                    let window_label = Self::derive_agy_window_label(b);
+                    let reset_time = b
+                        .get("resetTime")
+                        .or_else(|| b.get("reset_time"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let group_name = Self::format_group_title(mid);
+
+                    if let Some(existing) = groups.iter_mut().find(|g| g.name == group_name) {
+                        if let Some(existing_bucket) = existing
+                            .buckets
+                            .iter_mut()
+                            .find(|eb| eb.label == window_label)
                         {
-                            let reset_time = b
-                                .get("resetTime")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            groups.push(GroupInfo {
-                                name: group_title,
-                                buckets: vec![BucketInfo {
-                                    label: "5-Hour Window".to_string(),
-                                    rem_frac,
-                                    reset_time,
-                                }],
+                            if existing_bucket.reset_time.is_empty() && !reset_time.is_empty() {
+                                existing_bucket.reset_time = reset_time;
+                                existing_bucket.rem_frac = rem_frac;
+                            }
+                        } else {
+                            existing.buckets.push(BucketInfo {
+                                label: window_label,
+                                rem_frac,
+                                reset_time,
                             });
                         }
+                    } else {
+                        groups.push(GroupInfo {
+                            name: group_name,
+                            buckets: vec![BucketInfo {
+                                label: window_label,
+                                rem_frac,
+                                reset_time,
+                            }],
+                        });
                     }
                 }
             }
@@ -1536,14 +1452,15 @@ impl AgyAgent {
                 let rem_pct = (b.rem_frac * 100.0).clamp(0.0, 100.0);
                 let used_pct = ((1.0 - b.rem_frac) * 100.0).clamp(0.0, 100.0);
 
+                let lower_label = b.label.to_lowercase();
                 let (window_type, display_label) =
-                    if b.label.contains("5-Hour") || b.label.contains("5h") {
+                    if lower_label.contains("5-hour") || lower_label.contains("5h") {
                         ("5h".to_string(), "5h".to_string())
-                    } else if b.label.contains("Weekly") || b.label.contains("week") {
-                        ("weekly".to_string(), "Weekly".to_string())
-                    } else if b.label.contains("Daily") || b.label.contains("day") {
+                    } else if lower_label.contains("daily") || lower_label.contains("day") {
                         ("daily".to_string(), "Daily".to_string())
-                    } else if b.label.contains("Monthly") || b.label.contains("month") {
+                    } else if lower_label.contains("weekly") || lower_label.contains("week") {
+                        ("weekly".to_string(), "Weekly".to_string())
+                    } else if lower_label.contains("monthly") || lower_label.contains("month") {
                         ("monthly".to_string(), "Monthly".to_string())
                     } else {
                         ("window".to_string(), b.label)
@@ -2098,6 +2015,49 @@ mod tests {
             Some(&summary_sample),
             Some(&direct_sample),
         );
+    }
+
+    #[test]
+    fn test_parse_agy_quota_groups_gemini_5h_and_weekly_correct_order_and_values() {
+        let now = Utc::now();
+        let rt_weekly = (now + chrono::Duration::hours(118)).to_rfc3339(); // 4d 22h
+        let rt_5h = (now + chrono::Duration::hours(2) + chrono::Duration::minutes(43)).to_rfc3339(); // 2h 43m
+
+        // Direct buckets with 19.2% Weekly (4d 22h) and 65.0% 5h (2h 43m)
+        let direct_json = serde_json::json!({
+            "buckets": [
+                {
+                    "modelId": "gemini-2.5-pro",
+                    "remainingFraction": 0.192,
+                    "resetTime": rt_weekly
+                },
+                {
+                    "modelId": "gemini-2.5-flash",
+                    "remainingFraction": 0.650,
+                    "resetTime": rt_5h
+                }
+            ]
+        });
+
+        let groups = AgyAgent::parse_agy_quota_groups(None, Some(&direct_json));
+        assert_eq!(groups.len(), 1);
+        let gemini_group = &groups[0];
+        assert_eq!(gemini_group.name.as_deref(), Some("Gemini"));
+        assert_eq!(gemini_group.quotas.len(), 2);
+
+        // 5h must be the first line (index 0)
+        let q_5h = &gemini_group.quotas[0];
+        assert_eq!(q_5h.window_type, "5h");
+        assert_eq!(q_5h.display_label, "5h");
+        assert!((q_5h.remaining_percent - 65.0).abs() < 0.1);
+        assert!(q_5h.resets_in_text.as_ref().unwrap().contains("2h"));
+
+        // Weekly must be the second line (index 1)
+        let q_weekly = &gemini_group.quotas[1];
+        assert_eq!(q_weekly.window_type, "weekly");
+        assert_eq!(q_weekly.display_label, "Weekly");
+        assert!((q_weekly.remaining_percent - 19.2).abs() < 0.1);
+        assert!(q_weekly.resets_in_text.as_ref().unwrap().contains("4d"));
     }
 
     #[test]

@@ -272,17 +272,17 @@ pub struct AgyQuotaGroupDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct AgyQuotaBucketDto {
-    #[serde(default, rename = "bucketId")]
+    #[serde(default, rename = "bucketId", alias = "bucket_id")]
     pub bucket_id: Option<String>,
-    #[serde(default, rename = "displayName")]
+    #[serde(default, rename = "displayName", alias = "display_name")]
     pub display_name: Option<String>,
-    #[serde(default, rename = "modelId")]
+    #[serde(default, rename = "modelId", alias = "model_id")]
     pub model_id: Option<String>,
     #[serde(default)]
     pub window: Option<String>,
-    #[serde(default, rename = "remainingFraction")]
+    #[serde(default, rename = "remainingFraction", alias = "remaining_fraction")]
     pub remaining_fraction: Option<f64>,
-    #[serde(default, rename = "resetTime")]
+    #[serde(default, rename = "resetTime", alias = "reset_time")]
     pub reset_time: Option<String>,
 }
 
@@ -295,15 +295,45 @@ impl AgyQuotaBucketDto {
 
         let combined = format!("{} {} {}", window_str, bucket_id, display_name).to_lowercase();
 
-        if combined.contains("18000") || combined.contains("5h") || combined.contains("five") {
-            "5-Hour Window".to_string()
-        } else if combined.contains("604800") || combined.contains("week") {
+        let time_diff = self.reset_time.as_deref().and_then(|rt| {
+            chrono::DateTime::parse_from_rfc3339(rt).ok().map(|dt| {
+                let now = Utc::now();
+                dt.with_timezone(&Utc) - now
+            })
+        });
+
+        if combined.contains("604800") || combined.contains("week") {
             "Weekly Window".to_string()
         } else if combined.contains("86400")
             || combined.contains("day")
             || combined.contains("daily")
         {
             "Daily Window".to_string()
+        } else if combined.contains("18000") || combined.contains("5h") || combined.contains("five")
+        {
+            if let Some(diff) = time_diff {
+                if diff.num_hours() > 6 {
+                    "Weekly Window".to_string()
+                } else {
+                    "5-Hour Window".to_string()
+                }
+            } else {
+                "5-Hour Window".to_string()
+            }
+        } else if let Some(diff) = time_diff {
+            if diff.num_hours() > 24 {
+                "Weekly Window".to_string()
+            } else if diff.num_hours() > 6 {
+                "Daily Window".to_string()
+            } else if diff.num_seconds() > 0 {
+                "5-Hour Window".to_string()
+            } else if !window_str.is_empty() {
+                format!("{}-Hour Window", window_str)
+            } else if !display_name.is_empty() {
+                display_name.to_string()
+            } else {
+                "Window".to_string()
+            }
         } else if !window_str.is_empty() {
             format!("{}-Hour Window", window_str)
         } else if !display_name.is_empty() {
@@ -439,5 +469,58 @@ mod tests {
         let bucket = &group.buckets[0];
         assert_eq!(bucket.derive_window_label(), "5-Hour Window");
         assert_eq!(bucket.remaining_fraction, Some(0.85));
+    }
+
+    #[test]
+    fn test_derive_window_label_with_reset_time_heuristics() {
+        let now = Utc::now();
+        let in_4_days = (now + chrono::Duration::hours(118)).to_rfc3339();
+        let in_2_hours =
+            (now + chrono::Duration::hours(2) + chrono::Duration::minutes(43)).to_rfc3339();
+        let in_10_hours = (now + chrono::Duration::hours(10)).to_rfc3339();
+
+        // 1. Bucket with 4d reset time, no window or display_name -> "Weekly Window"
+        let bucket_4d = AgyQuotaBucketDto {
+            bucket_id: None,
+            display_name: None,
+            model_id: Some("gemini-2.5-pro".to_string()),
+            window: None,
+            remaining_fraction: Some(0.192),
+            reset_time: Some(in_4_days.clone()),
+        };
+        assert_eq!(bucket_4d.derive_window_label(), "Weekly Window");
+
+        // 2. Bucket with 4d reset time, but misleading "5h" keyword in window -> corrected to "Weekly Window"
+        let bucket_misleading_5h = AgyQuotaBucketDto {
+            bucket_id: Some("gemini-window".to_string()),
+            display_name: None,
+            model_id: Some("gemini-2.5-pro".to_string()),
+            window: Some("5h".to_string()),
+            remaining_fraction: Some(0.192),
+            reset_time: Some(in_4_days),
+        };
+        assert_eq!(bucket_misleading_5h.derive_window_label(), "Weekly Window");
+
+        // 3. Bucket with 2h reset time and no week tag -> "5-Hour Window"
+        let bucket_2h = AgyQuotaBucketDto {
+            bucket_id: None,
+            display_name: None,
+            model_id: Some("gemini-2.5-flash".to_string()),
+            window: None,
+            remaining_fraction: Some(0.65),
+            reset_time: Some(in_2_hours),
+        };
+        assert_eq!(bucket_2h.derive_window_label(), "5-Hour Window");
+
+        // 4. Bucket with 10h reset time and no keywords -> "Daily Window"
+        let bucket_10h = AgyQuotaBucketDto {
+            bucket_id: None,
+            display_name: None,
+            model_id: Some("gemini-2.5-pro".to_string()),
+            window: None,
+            remaining_fraction: Some(0.5),
+            reset_time: Some(in_10_hours),
+        };
+        assert_eq!(bucket_10h.derive_window_label(), "Daily Window");
     }
 }
